@@ -1,0 +1,46 @@
+{
+  "rules": {
+    ".read": "auth != null",
+    ".write": "auth != null",
+    "nd_presence": {
+      "$uid": {
+        ".read": "auth != null",
+        ".write": "auth != null && auth.uid === $uid",
+        ".indexOn": ["name"]
+      }
+    },
+    "nd_session_names": {
+      "$uid": {
+        ".read": "auth != null",
+        ".write": "auth != null && auth.uid === $uid"
+      }
+    },
+    "nd_contacts": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        "$contactUid": {
+          ".write": "auth != null && (auth.uid === $uid || auth.uid === $contactUid)"
+        }
+      }
+    },
+    "nd_msgs": {
+      "$convoId": {
+        ".read": "auth != null && $convoId.contains(auth.uid)",
+        ".write": "auth != null && $convoId.contains(auth.uid)",
+        ".indexOn": ["ts"]
+      }
+    },
+    "nd_typing": {
+      "$uid": {
+        ".read": "auth != null",
+        ".write": "auth != null && auth.uid === $uid"
+      }
+    },
+    "nd_signal": {
+      "$uid": {
+        ".read": "auth != null && (auth.uid === $uid || data.child('from').val() === auth.uid)",
+        ".write": "auth != null"
+      }
+    }
+  }
+}

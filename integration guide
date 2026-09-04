@@ -1,0 +1,285 @@
+# Backend Integration Guide — Real Contacts & Disappearing Messages
+
+This guide wires the Chat PWA up to a real backend so that:
+
+- Contacts come from authenticated users only (no placeholders).
+- Messages carry expiry metadata and are actually deleted once they expire.
+- The supported lifespans are: **5m, 10m, 30m, 45m, 1h, 6h, 12h, 1d, 2d, 4d (maximum)**.
+
+Pick **one** of the two backends below — both achieve the same result.
+
+---
+
+## Option A — Firebase (Firestore + Auth + Cloud Functions)
+
+### 1. Authentication
+
+Use Firebase Auth with **Phone Authentication** so identity is tied to a real phone number, the same way WhatsApp works.
+
+```js
+import { initializeApp } from "firebase/app";
+import { getAuth, RecaptchaVerifier, signInWithPhoneNumber } from "firebase/auth";
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+
+const verifier = new RecaptchaVerifier(auth, "recaptcha-container", { size: "invisible" });
+const confirmation = await signInWithPhoneNumber(auth, "+233XXXXXXXXX", verifier);
+// User enters the SMS code:
+const userCredential = await confirmation.confirm(smsCode);
+```
+
+After sign-in, create/update a `users/{uid}` document — this is what populates the **Contacts** screen instead of fake data. A contact only shows up once you mutually match against the device's address book (synced separately via the Capacitor Contacts plugin) and a `users` document exists for that phone number.
+
+```js
+import { doc, setDoc, serverTimestamp } from "firebase/firestore";
+
+await setDoc(doc(db, "users", userCredential.user.uid), {
+  phone: userCredential.user.phoneNumber,
+  name: profileName,
+  createdAt: serverTimestamp(),
+}, { merge: true });
+```
+
+### 2. Message schema with expiry metadata
+
+```json
+{
+  "text": "Hello world",
+  "senderId": "user123",
+  "chatId": "chat_abc",
+  "createdAt": 1718200000000,
+  "expiresIn": 3600,
+  "expiresAt": 1718203600000
+}
+```
+
+- `expiresIn` — the duration in **seconds** the user picked (`null`/`0` means "Off").
+- `expiresAt` — `createdAt + expiresIn * 1000`, pre-computed client-side so Firestore can index and query on it directly.
+
+```js
+import { addDoc, collection, serverTimestamp } from "firebase/firestore";
+
+const EXPIRY_SECONDS = {
+  off: null, "5m": 300, "10m": 600, "30m": 1800, "45m": 2700,
+  "1h": 3600, "6h": 21600, "12h": 43200, "1d": 86400, "2d": 172800,
+  "4d": 345600, // maximum allowed
+};
+
+async function sendMessage(chatId, text, expiryKey) {
+  const expiresIn = EXPIRY_SECONDS[expiryKey];
+  const createdAt = Date.now();
+  await addDoc(collection(db, "chats", chatId, "messages"), {
+    text,
+    senderId: auth.currentUser.uid,
+    createdAt,
+    expiresIn,
+    expiresAt: expiresIn ? createdAt + expiresIn * 1000 : null,
+  });
+}
+```
+
+Reading messages (live):
+
+```js
+import { onSnapshot, query, collection, orderBy } from "firebase/firestore";
+
+const q = query(collection(db, "chats", chatId, "messages"), orderBy("createdAt", "asc"));
+onSnapshot(q, (snap) => {
+  const messages = snap.docs
+    .map((d) => ({ id: d.id, ...d.data() }))
+    .filter((m) => !m.expiresAt || m.expiresAt > Date.now()); // hide already-expired rows immediately
+  renderMessages(messages);
+});
+```
+
+### 3. Enforcing expiry server-side
+
+Client-side filtering hides expired messages instantly, but the **documents must also be deleted** so they don't leak in backups, exports, or admin tools. Two supported approaches:
+
+**3a. Firestore TTL policies (recommended, no code to maintain)**
+
+Firestore has a native TTL feature: set a TTL policy on the `expiresAt` field (must be a Firestore `Timestamp`, so store it as a Timestamp rather than a raw number) and Firestore automatically deletes the document within ~24 hours of the timestamp passing.
+
+```bash
+gcloud firestore fields ttls update expiresAt \
+  --collection-group=messages \
+  --enable-ttl
+```
+
+Because Firestore TTL deletion can lag by up to a day, pair it with the client-side filter above for instant disappearance in the UI, and TTL for guaranteed eventual cleanup.
+
+**3b. Scheduled Cloud Function (tighter timing, e.g. for the 5-minute tier)**
+
+```js
+const { onSchedule } = require("firebase-functions/v2/scheduler");
+const { getFirestore } = require("firebase-admin/firestore");
+
+exports.purgeExpiredMessages = onSchedule("every 5 minutes", async () => {
+  const db = getFirestore();
+  const now = Date.now();
+  const expired = await db.collectionGroup("messages")
+    .where("expiresAt", "<=", now)
+    .where("expiresAt", "!=", null)
+    .limit(500)
+    .get();
+
+  const batch = db.batch();
+  expired.forEach((doc) => batch.delete(doc.ref));
+  await batch.commit();
+});
+```
+
+Use 3b for the short tiers (5m–45m) where users expect near-instant deletion, and rely on native TTL as the backstop for everything else.
+
+---
+
+## Option B — Supabase (Postgres + Auth + Storage)
+
+### 1. Authentication
+
+Enable **Phone Auth** (Twilio/MessageBird/Vonage) in Supabase Auth settings, then:
+
+```js
+import { createClient } from "@supabase/supabase-js";
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+await supabase.auth.signInWithOtp({ phone: "+233XXXXXXXXX" });
+// User enters the SMS code:
+const { data, error } = await supabase.auth.verifyOtp({
+  phone: "+233XXXXXXXXX",
+  token: smsCode,
+  type: "sms",
+});
+```
+
+A `profiles` table (linked 1:1 to `auth.users` via a trigger) backs the **Contacts** screen — again, only rows that exist here (i.e. real, authenticated people) are eligible to appear.
+
+```sql
+create table profiles (
+  id uuid references auth.users on delete cascade primary key,
+  phone text unique not null,
+  name text,
+  created_at timestamptz default now()
+);
+
+alter table profiles enable row level security;
+create policy "Users can read all profiles" on profiles for select using (true);
+create policy "Users can update own profile" on profiles for update using (auth.uid() = id);
+```
+
+### 2. Message schema with expiry metadata
+
+```sql
+create table messages (
+  id uuid primary key default gen_random_uuid(),
+  chat_id uuid not null references chats(id) on delete cascade,
+  sender_id uuid not null references auth.users(id),
+  text text not null,
+  created_at timestamptz not null default now(),
+  expires_in_seconds integer,         -- null = "Off"; max allowed value enforced below
+  expires_at timestamptz generated always as
+    (created_at + (expires_in_seconds || ' seconds')::interval) stored
+);
+
+-- Enforce the 4-day ceiling at the database level too, not just in the UI:
+alter table messages
+  add constraint expiry_within_max
+  check (expires_in_seconds is null or expires_in_seconds <= 345600);
+
+alter table messages enable row level security;
+create policy "Members can read chat messages" on messages
+  for select using (
+    exists (select 1 from chat_members where chat_id = messages.chat_id and user_id = auth.uid())
+  );
+create policy "Members can send messages" on messages
+  for insert with check (auth.uid() = sender_id);
+```
+
+Sending a message:
+
+```js
+const EXPIRY_SECONDS = {
+  off: null, "5m": 300, "10m": 600, "30m": 1800, "45m": 2700,
+  "1h": 3600, "6h": 21600, "12h": 43200, "1d": 86400, "2d": 172800,
+  "4d": 345600,
+};
+
+async function sendMessage(chatId, text, expiryKey) {
+  await supabase.from("messages").insert({
+    chat_id: chatId,
+    sender_id: (await supabase.auth.getUser()).data.user.id,
+    text,
+    expires_in_seconds: EXPIRY_SECONDS[expiryKey],
+  });
+}
+```
+
+Reading messages (live, via Realtime), already excluding expired rows:
+
+```js
+const { data } = await supabase
+  .from("messages")
+  .select("*")
+  .eq("chat_id", chatId)
+  .or("expires_at.is.null,expires_at.gt.now()")
+  .order("created_at", { ascending: true });
+
+supabase
+  .channel(`messages:${chatId}`)
+  .on("postgres_changes", { event: "*", schema: "public", table: "messages", filter: `chat_id=eq.${chatId}` }, (payload) => {
+    refreshMessages(chatId);
+  })
+  .subscribe();
+```
+
+### 3. Enforcing expiry server-side
+
+Postgres has no built-in row TTL, so cleanup is a scheduled job. Supabase gives you two easy options:
+
+**3a. `pg_cron` (runs inside the database, simplest)**
+
+```sql
+create extension if not exists pg_cron;
+
+select cron.schedule(
+  'purge-expired-messages',
+  '*/5 * * * *',  -- every 5 minutes, matching the shortest expiry tier
+  $$ delete from messages where expires_at is not null and expires_at <= now(); $$
+);
+```
+
+**3b. Supabase Edge Function on a schedule (use if you need extra logic, e.g. logging or notifying)**
+
+```ts
+// supabase/functions/purge-expired-messages/index.ts
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+Deno.serve(async () => {
+  const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+  const { error } = await supabase.from("messages").delete().lte("expires_at", new Date().toISOString());
+  return new Response(error ? error.message : "ok", { status: error ? 500 : 200 });
+});
+```
+
+Schedule it from the Supabase dashboard (Edge Functions → Cron) at `*/5 * * * *`.
+
+---
+
+## Which to choose?
+
+| | Firebase | Supabase |
+|---|---|---|
+| Data model | Document/NoSQL (Firestore) | Relational (Postgres) |
+| Built-in TTL | Yes (native Firestore TTL) | No — use `pg_cron` |
+| Realtime | `onSnapshot` listeners | `postgres_changes` channels |
+| Auth | Phone auth via Firebase Auth | Phone auth via Supabase Auth (needs SMS provider) |
+| Row-level security | Firestore Security Rules | Postgres RLS policies (shown above) |
+| Good fit if | You want the least backend code to maintain | You want SQL, joins, and full Postgres tooling |
+
+Either backend slots into the existing PWA: replace the in-memory `state.contacts` / `state.chats` / `state.messages` objects in `index.html` with reads from Firestore or Supabase, and call `sendMessage()` from above instead of the local-only version currently in the file.
+
+## Capacitor notes (for the native conversion)
+
+- Use `@capacitor-community/contacts` to read the device address book and match phone numbers against your `users`/`profiles` table — this is what should ultimately populate "Sync phone contacts" in the app instead of the manual "New Contact" form.
+- Both Firebase and Supabase JS SDKs work unchanged inside a Capacitor WebView; no native plugin is required for auth/data, only for contacts, push notifications, and camera/microphone access.
