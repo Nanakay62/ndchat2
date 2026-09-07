@@ -3009,95 +3009,7 @@ let pc = null, localStream = null, callUid = null, callType = null;
 let isMuted = false, isSpeaker = false, callTI = null, callStart = null;
 
 
-// ─── SYMMETRIC KDF MESSAGE RATCHET (FORWARD SECRECY) ───
-const _ratchetChains = {}; // conversation chain states in memory
-
-async function getSharedMasterSecret(contactUid) {
-  let peerPubJWK = contactsData[contactUid]?.pubKey;
-  if (!peerPubJWK) {
-    try {
-      const snap = await db.ref('nd_presence/' + contactUid + '/pubKey').once('value');
-      if (snap.exists()) {
-        peerPubJWK = snap.val();
-        if (contactsData[contactUid]) contactsData[contactUid].pubKey = peerPubJWK;
-      }
-    } catch (e) {}
-  }
-  if (!peerPubJWK || !myKeyPair) return null;
-  try {
-    const peerKey = await crypto.subtle.importKey('jwk', peerPubJWK, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
-    return await crypto.subtle.deriveBits(
-      { name: 'ECDH', public: peerKey },
-      myKeyPair.privateKey,
-      256
-    );
-  } catch(e) {
-    console.warn('Error deriving master secret:', e);
-    return null;
-  }
-}
-
-async function deriveConversationChains(peerUid) {
-  const cid = convoId(myUid, peerUid);
-  if (_ratchetChains[cid]) return _ratchetChains[cid];
-
-  const masterBytes = await getSharedMasterSecret(peerUid);
-  if (!masterBytes) throw new Error('Cannot derive master secret');
-
-  const isLeader = myUid < peerUid;
-  const hmacKey = await crypto.subtle.importKey('raw', masterBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  
-  const alphaBytes = await crypto.subtle.sign('HMAC', hmacKey, new TextEncoder().encode('ndchat_ratchet_chain_alpha'));
-  const betaBytes = await crypto.subtle.sign('HMAC', hmacKey, new TextEncoder().encode('ndchat_ratchet_chain_beta'));
-
-  _ratchetChains[cid] = {
-    sendChain: isLeader ? new Uint8Array(alphaBytes) : new Uint8Array(betaBytes),
-    recvChain: isLeader ? new Uint8Array(betaBytes) : new Uint8Array(alphaBytes),
-    sendSeq: 0,
-    recvSeq: 0
-  };
-  return _ratchetChains[cid];
-}
-
-async function ratchetSendKey(peerUid) {
-  const sharedKey = await getSharedKey(peerUid);
-  if (!sharedKey) throw new Error('Shared master key unavailable');
-  const chainState = await deriveConversationChains(peerUid);
-
-  const seq = chainState.sendSeq++;
-  const hmacKey = await crypto.subtle.importKey('raw', chainState.sendChain, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  
-  // Derive single-use message key
-  const msgKeyBytes = await crypto.subtle.sign('HMAC', hmacKey, new TextEncoder().encode('msg_key:' + seq));
-  // Advance chain forward (pre-image resistance guarantees forward secrecy)
-  const nextChainBytes = await crypto.subtle.sign('HMAC', hmacKey, new TextEncoder().encode('chain_advance'));
-  chainState.sendChain = new Uint8Array(nextChainBytes);
-
-  const aesMsgKey = await crypto.subtle.importKey('raw', msgKeyBytes, { name: 'AES-GCM' }, false, ['encrypt']);
-  return { aesMsgKey, seq };
-}
-
-async function ratchetRecvKey(peerUid, seq) {
-  const sharedKey = await getSharedKey(peerUid);
-  if (!sharedKey) throw new Error('Shared master key unavailable');
-  const chainState = await deriveConversationChains(peerUid);
-
-  // Fast catch-up if sequence advanced
-  while (chainState.recvSeq < seq) {
-    const hmacKey = await crypto.subtle.importKey('raw', chainState.recvChain, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-    const nextChainBytes = await crypto.subtle.sign('HMAC', hmacKey, new TextEncoder().encode('chain_advance'));
-    chainState.recvChain = new Uint8Array(nextChainBytes);
-    chainState.recvSeq++;
-  }
-
-  const hmacKey = await crypto.subtle.importKey('raw', chainState.recvChain, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const msgKeyBytes = await crypto.subtle.sign('HMAC', hmacKey, new TextEncoder().encode('msg_key:' + seq));
-  const nextChainBytes = await crypto.subtle.sign('HMAC', hmacKey, new TextEncoder().encode('chain_advance'));
-  chainState.recvChain = new Uint8Array(nextChainBytes);
-  chainState.recvSeq++;
-
-  return await crypto.subtle.importKey('raw', msgKeyBytes, { name: 'AES-GCM' }, false, ['decrypt']);
-}
+// ─── END-TO-END ENCRYPTION (ECDH NIST P-256 + AES-256-GCM) ───
 
 // E2EE Key Management
 let myKeyPair = null;
@@ -3178,14 +3090,38 @@ async function initCryptoKeys(uid) {
 }
 
 async function getSharedKey(contactUid) {
+  if (!contactUid) return null;
   if (_sharedKeys[contactUid]) return _sharedKeys[contactUid];
   let peerPubJWK = contactsData[contactUid]?.pubKey;
+  if (!peerPubJWK) {
+    try {
+      const snap = await db.ref('nd_presence/' + contactUid).once('value');
+      if (snap.exists()) {
+        const val = snap.val();
+        peerPubJWK = val?.pubKey || null;
+        if (!contactsData[contactUid]) contactsData[contactUid] = {};
+        if (peerPubJWK) contactsData[contactUid].pubKey = peerPubJWK;
+        if (val?.name && !contactsData[contactUid].name) contactsData[contactUid].name = val.name;
+      }
+    } catch (e) {}
+  }
   if (!peerPubJWK) {
     try {
       const snap = await db.ref('nd_presence/' + contactUid + '/pubKey').once('value');
       if (snap.exists()) {
         peerPubJWK = snap.val();
-        if (contactsData[contactUid]) contactsData[contactUid].pubKey = peerPubJWK;
+        if (!contactsData[contactUid]) contactsData[contactUid] = {};
+        if (peerPubJWK) contactsData[contactUid].pubKey = peerPubJWK;
+      }
+    } catch (e) {}
+  }
+  if (!peerPubJWK) {
+    try {
+      const uInfo = JSON.parse(localStorage.getItem('nd_local_user_' + contactUid) || '{}');
+      if (uInfo.pubKey) {
+        peerPubJWK = uInfo.pubKey;
+        if (!contactsData[contactUid]) contactsData[contactUid] = {};
+        contactsData[contactUid].pubKey = peerPubJWK;
       }
     } catch (e) {}
   }
@@ -3212,36 +3148,23 @@ async function encryptPayload(contactUid, plainObj) {
   if (window._tofuLockdownUid === contactUid) {
     throw new Error('Recipient key has changed. Sending blocked until verified.');
   }
-  let key, seq = null;
-  try {
-    const ratchet = await ratchetSendKey(contactUid);
-    key = ratchet.aesMsgKey;
-    seq = ratchet.seq;
-  } catch(e) {
-    key = await getSharedKey(contactUid);
-  }
+  const key = await getSharedKey(contactUid);
   if (!key) {
     throw new Error('E2EE key unavailable for this contact. Message blocked for security.');
   }
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const data = new TextEncoder().encode(JSON.stringify(plainObj));
   const cipherBuffer = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, data);
-  const res = {
+  return {
     c: bufferToBase64(cipherBuffer),
     iv: Array.from(iv).map(b => b.toString(16).padStart(2, '0')).join(''),
     e: true
   };
-  if (seq !== null) res.seq = seq;
-  return res;
 }
 
 async function decryptPayload(contactUid, msgObj) {
   if (!msgObj || !msgObj.e || !msgObj.c || !msgObj.iv) return msgObj;
-  let key = null;
-  if (typeof msgObj.seq === 'number') {
-    try { key = await ratchetRecvKey(contactUid, msgObj.seq); } catch(e) {}
-  }
-  if (!key) key = await getSharedKey(contactUid);
+  let key = await getSharedKey(contactUid);
   if (!key) return { ...msgObj, text: '🔒 Encrypted message (deriving key…)' };
   try {
     const iv = new Uint8Array(msgObj.iv.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
@@ -3521,6 +3444,9 @@ function loadContacts() {
       if (!presenceListeners[uid]) {
         const pHandler = psnap => {
           const p = psnap.val() || {};
+          if (p.pubKey && contactsData[uid]?.pubKey && JSON.stringify(contactsData[uid].pubKey) !== JSON.stringify(p.pubKey)) {
+            delete _sharedKeys[uid];
+          }
           contactsData[uid] = {
             name: p.name || uid.slice(0, 8),
             online: !!p.online,
