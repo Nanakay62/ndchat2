@@ -5252,7 +5252,6 @@ function initNativeIntegrations() {
   const AppPlugin = Cap.Plugins?.App;
   const StatusBarPlugin = Cap.Plugins?.StatusBar;
   const KeyboardPlugin = Cap.Plugins?.Keyboard;
-  const PushPlugin = Cap.Plugins?.PushNotifications;
 
   // 1. Hardware Back Button Handling
   if (AppPlugin) {
@@ -5316,29 +5315,6 @@ function initNativeIntegrations() {
     KeyboardPlugin.addListener('keyboardDidShow', () => {
       const msgs = document.getElementById('msgs');
       if (msgs) msgs.scrollTop = msgs.scrollHeight;
-    });
-  }
-
-  // 4. Push Notifications (FCM)
-  if (PushPlugin) {
-    PushPlugin.requestPermissions().then(result => {
-      if (result.receive === 'granted') {
-        PushPlugin.register();
-      }
-    }).catch(() => {});
-
-    PushPlugin.addListener('registration', token => {
-      if (token && token.value && myUid) {
-        db.ref('nd_presence/' + myUid + '/fcmToken').set(token.value).catch(() => {});
-      }
-    });
-
-    PushPlugin.addListener('pushNotificationActionPerformed', notification => {
-      const data = notification?.notification?.data;
-      if (data && data.senderUid) {
-        const contact = contactsData[data.senderUid];
-        openChat(data.senderUid, contact?.name || data.senderName || 'Contact');
-      }
     });
   }
 }
