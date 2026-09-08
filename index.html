@@ -10,7 +10,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&family=Roboto:wght@300;400;500&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="./vendor/qrcode.min.js"></script>
 <script src="bip39_wordlist.js"></script>
 <style>
 
@@ -2974,9 +2974,9 @@ body.dark .safety-modal {
 
 <audio id="remote-audio" autoplay playsinline></audio>
 
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
+<script src="./vendor/firebase-app-compat.js"></script>
+<script src="./vendor/firebase-auth-compat.js"></script>
+<script src="./vendor/firebase-database-compat.js"></script>
 <script>
 // PWA Service Worker Registration
 if ('serviceWorker' in navigator) {
@@ -3787,24 +3787,8 @@ function updateToolbarStatus() {
 }
 
 function convoId(a, b) {
-  const raw = 'ndc_v1_' + [a, b].sort().join(':');
-  let h1 = 0xdeadbeef ^ 0x12345678, h2 = 0x41c6ce57 ^ 0x87654321;
-  for (let i = 0; i < raw.length; i++) {
-    const ch = raw.charCodeAt(i);
-    h1 = Math.imul(h1 ^ ch, 2654435761);
-    h2 = Math.imul(h2 ^ ch, 1597334677);
-  }
-  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
-  h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
-  h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  const part1 = (h1 >>> 0).toString(16).padStart(8, '0');
-  const part2 = (h2 >>> 0).toString(16).padStart(8, '0');
-  let h3 = Math.imul(h1 ^ 0xabcdef01, 1597334677);
-  let h4 = Math.imul(h2 ^ 0x10fedcba, 2654435761);
-  const part3 = (h3 >>> 0).toString(16).padStart(8, '0');
-  const part4 = (h4 >>> 0).toString(16).padStart(8, '0');
-  return 'ch_' + part1 + part2 + part3 + part4;
+  if (!a || !b) return 'conv_invalid';
+  return 'conv_' + [a, b].sort().join('_');
 }
 
 function loadMessages(contactUid) {
@@ -5260,6 +5244,106 @@ if (window.visualViewport) {
   window.visualViewport.addEventListener('resize', fix); window.visualViewport.addEventListener('scroll', fix); fix();
 }
 
+// ─── NATIVE ANDROID & CAPACITOR INTEGRATIONS ─────────────────────────────
+function initNativeIntegrations() {
+  const Cap = window.Capacitor;
+  if (!Cap) return;
+
+  const AppPlugin = Cap.Plugins?.App;
+  const StatusBarPlugin = Cap.Plugins?.StatusBar;
+  const KeyboardPlugin = Cap.Plugins?.Keyboard;
+  const PushPlugin = Cap.Plugins?.PushNotifications;
+
+  // 1. Hardware Back Button Handling
+  if (AppPlugin) {
+    AppPlugin.addListener('backButton', () => {
+      // Priority 1: In-call modal
+      const callModal = document.getElementById('call-modal');
+      if (callModal && callModal.style.display !== 'none' && callModal.style.display !== '') {
+        hangup();
+        return;
+      }
+      // Priority 2: Any open modal/overlay
+      const overlays = [
+        'settings-overlay',
+        'about-overlay',
+        'safety-modal-overlay',
+        'add-contact-overlay',
+        'confirm-del-overlay',
+        'clear-overlay',
+        'name-edit-overlay'
+      ];
+      for (const id of overlays) {
+        const el = document.getElementById(id);
+        if (el && el.style.display && el.style.display !== 'none') {
+          el.style.display = 'none';
+          return;
+        }
+      }
+      // Priority 3: Attach menu
+      const attachMenu = document.getElementById('attach-menu');
+      if (attachMenu && attachMenu.style.display === 'flex') {
+        attachMenu.style.display = 'none';
+        return;
+      }
+      // Priority 4: Active chat view -> return to contacts
+      if (activeUid) {
+        activeUid = null;
+        activeName = '';
+        document.getElementById('msgs').style.display = 'none';
+        document.getElementById('input-area').style.display = 'none';
+        document.getElementById('no-chat').style.display = 'flex';
+        document.getElementById('toolbar-info').style.display = 'none';
+        document.getElementById('toolbar-empty').style.display = 'block';
+        document.getElementById('call-btn').style.display = 'none';
+        document.getElementById('verify-key-btn').style.display = 'none';
+        document.getElementById('clear-btn').style.display = 'none';
+        return;
+      }
+      // Default: Exit or minimize app
+      AppPlugin.exitApp();
+    });
+  }
+
+  // 2. Status Bar Styling
+  if (StatusBarPlugin) {
+    StatusBarPlugin.setBackgroundColor({ color: '#000000' }).catch(() => {});
+    StatusBarPlugin.setStyle({ style: 'DARK' }).catch(() => {});
+  }
+
+  // 3. Soft Keyboard Adjustments
+  if (KeyboardPlugin) {
+    KeyboardPlugin.addListener('keyboardDidShow', () => {
+      const msgs = document.getElementById('msgs');
+      if (msgs) msgs.scrollTop = msgs.scrollHeight;
+    });
+  }
+
+  // 4. Push Notifications (FCM)
+  if (PushPlugin) {
+    PushPlugin.requestPermissions().then(result => {
+      if (result.receive === 'granted') {
+        PushPlugin.register();
+      }
+    }).catch(() => {});
+
+    PushPlugin.addListener('registration', token => {
+      if (token && token.value && myUid) {
+        db.ref('nd_presence/' + myUid + '/fcmToken').set(token.value).catch(() => {});
+      }
+    });
+
+    PushPlugin.addListener('pushNotificationActionPerformed', notification => {
+      const data = notification?.notification?.data;
+      if (data && data.senderUid) {
+        const contact = contactsData[data.senderUid];
+        openChat(data.senderUid, contact?.name || data.senderName || 'Contact');
+      }
+    });
+  }
+}
+
+initNativeIntegrations();
 initSession();
 </script>
 </body>

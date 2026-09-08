@@ -1,9 +1,13 @@
-const CACHE_NAME = 'ndchat-v3.7';
+const CACHE_NAME = 'ndchat-v3.8';
 const ASSETS_TO_CACHE = [
   './manifest.json',
   './icons/icon-192.png',
   './icons/icon-512.png',
-  './bip39_wordlist.js'
+  './bip39_wordlist.js',
+  './vendor/qrcode.min.js',
+  './vendor/firebase-app-compat.js',
+  './vendor/firebase-auth-compat.js',
+  './vendor/firebase-database-compat.js'
 ];
 
 self.addEventListener('install', (event) => {

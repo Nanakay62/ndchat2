@@ -1,17 +1,15 @@
 {
   "rules": {
-    ".read": "auth != null",
-    ".write": "auth != null",
     "nd_presence": {
+      ".read": "auth != null",
+      ".indexOn": ["name"],
       "$uid": {
-        ".read": "auth != null",
-        ".write": "auth != null && auth.uid === $uid",
-        ".indexOn": ["name"]
+        ".write": "auth != null && auth.uid === $uid"
       }
     },
     "nd_session_names": {
+      ".read": "auth != null",
       "$uid": {
-        ".read": "auth != null",
         ".write": "auth != null && auth.uid === $uid"
       }
     },
@@ -31,14 +29,20 @@
       }
     },
     "nd_typing": {
+      ".read": "auth != null",
       "$uid": {
-        ".read": "auth != null",
         ".write": "auth != null && auth.uid === $uid"
       }
     },
     "nd_signal": {
       "$uid": {
-        ".read": "auth != null && (auth.uid === $uid || data.child('from').val() === auth.uid)",
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null"
+      }
+    },
+    "nd_vault": {
+      "$vaultId": {
+        ".read": "auth != null",
         ".write": "auth != null"
       }
     }
