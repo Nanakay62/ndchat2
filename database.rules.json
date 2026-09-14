@@ -36,7 +36,7 @@
     },
     "nd_signal": {
       "$uid": {
-        ".read": "auth != null && auth.uid === $uid",
+        ".read": "auth != null",
         ".write": "auth != null"
       }
     },

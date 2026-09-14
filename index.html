@@ -3607,10 +3607,15 @@ function loadContacts() {
       }
     });
 
-    contactsData = {};
+    Object.keys(contactsData).forEach(uid => {
+      if (!contacts[uid]) delete contactsData[uid];
+    });
     if (!uids.length) { renderContacts(); return; }
 
     uids.forEach(uid => {
+      if (!contactsData[uid]) {
+        contactsData[uid] = { name: uid.slice(0, 8), online: false, photoURL: null, pubKey: null };
+      }
       if (!presenceListeners[uid]) {
         const pHandler = psnap => {
           const p = psnap.val() || {};
@@ -3632,7 +3637,15 @@ function loadContacts() {
       listenUnread(uid);
       listenLastMessage(uid);
     });
+    renderContacts();
   });
+}
+
+function getLastSeen(uid) {
+  if (lastSeen[uid]) return lastSeen[uid];
+  const stored = parseInt(localStorage.getItem('nd_last_seen_' + myUid + '_' + uid) || '0', 10);
+  if (stored) lastSeen[uid] = stored;
+  return stored || 0;
 }
 
 function listenUnread(uid) {
@@ -3649,7 +3662,7 @@ function listenUnread(uid) {
     renderContacts();
   };
   unreadListeners[uid] = uHandler;
-  db.ref('nd_msgs/' + cid).orderByChild('ts').startAt((lastSeen[uid] || 0) + 1).on('value', uHandler);
+  db.ref('nd_msgs/' + cid).orderByChild('ts').startAt(getLastSeen(uid) + 1).on('value', uHandler);
 }
 
 function listenLastMessage(uid) {
@@ -4024,7 +4037,7 @@ function openChat(uid, name) {
       // KEY MISMATCH: HARD LOCKDOWN
       window._tofuLockdownUid = uid;
       warnBanner.classList.add('show');
-      document.getElementById('sec-warn-text').innerHTML = '<strong>⚠️ KEY COMPROMISE LOCKDOWN:</strong> ' + escapeHtml(name) + '\'s cryptographic key has changed! Outbound messaging is blocked to prevent MITM interception. <button id="btn-review-key" style="margin-left:8px;padding:3px 8px;border-radius:6px;border:none;background:var(--danger);color:#fff;cursor:pointer;font-weight:600">Review &amp; Accept</button>';
+      document.getElementById('sec-warn-text').innerHTML = '<strong>⚠️ KEY COMPROMISE LOCKDOWN:</strong> ' + esc(name) + '\'s cryptographic key has changed! Outbound messaging is blocked to prevent MITM interception. <button id="btn-review-key" style="margin-left:8px;padding:3px 8px;border-radius:6px;border:none;background:var(--danger);color:#fff;cursor:pointer;font-weight:600">Review &amp; Accept</button>';
       
       const btnRev = document.getElementById('btn-review-key');
       if (btnRev) {
@@ -4046,7 +4059,10 @@ function openChat(uid, name) {
     }
   }
   updateToolbarStatus();
-  lastSeen[uid] = Date.now(); unread[uid] = 0;
+  const now = Date.now();
+  lastSeen[uid] = now;
+  try { localStorage.setItem('nd_last_seen_' + myUid + '_' + uid, now.toString()); } catch (e) {}
+  unread[uid] = 0;
   document.getElementById('no-chat').style.display = 'none';
   document.getElementById('msgs').style.display = 'flex';
   document.getElementById('input-area').style.display = 'block';
@@ -4506,16 +4522,40 @@ document.getElementById('rec-send').onclick = async () => {
   reader.readAsDataURL(blob);
 };
 
+let _currentPlayingVoice = null;
 const _vplay = {};
 function toggleVoice(vid, src, btn) {
   if (_vplay[vid]) {
     const a = _vplay[vid];
-    if (a.paused) { a.play(); btn.textContent = '⏸'; }
-    else { a.pause(); btn.textContent = '▶'; }
+    if (a.paused) {
+      if (_currentPlayingVoice && _currentPlayingVoice !== a) {
+        _currentPlayingVoice.pause();
+        if (_currentPlayingVoice._btn) _currentPlayingVoice._btn.textContent = '▶';
+      }
+      a.play();
+      a._btn = btn;
+      _currentPlayingVoice = a;
+      btn.textContent = '⏸';
+    } else {
+      a.pause();
+      btn.textContent = '▶';
+      if (_currentPlayingVoice === a) _currentPlayingVoice = null;
+    }
     return;
   }
+  if (_currentPlayingVoice) {
+    _currentPlayingVoice.pause();
+    if (_currentPlayingVoice._btn) _currentPlayingVoice._btn.textContent = '▶';
+  }
   const a = new Audio(src); _vplay[vid] = a;
-  a.onended = () => { btn.textContent = '▶'; const f = document.getElementById('vpf-' + vid); if (f) f.style.width = '0%'; };
+  a._btn = btn;
+  _currentPlayingVoice = a;
+  a.onended = () => {
+    btn.textContent = '▶';
+    const f = document.getElementById('vpf-' + vid);
+    if (f) f.style.width = '0%';
+    if (_currentPlayingVoice === a) _currentPlayingVoice = null;
+  };
   a.ontimeupdate = () => { const f = document.getElementById('vpf-' + vid); if (f && a.duration) f.style.width = (a.currentTime / a.duration * 100) + '%'; };
   a.play(); btn.textContent = '⏸';
 }
@@ -4545,7 +4585,7 @@ function getIceConfig() {
   const customTurn = JSON.parse(localStorage.getItem('nd_custom_turn') || 'null');
 
   const config = {
-    iceServers: [
+    iceServers: isRelayShieldOn ? [] : [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun.cloudflare.com:3478' }
     ]
@@ -4678,6 +4718,9 @@ async function answerCall() {
   const ans = await pc.createAnswer(); await pc.setLocalDescription(ans);
   await db.ref('nd_signal/' + myUid + '/answer').set({ type: ans.type, sdp: ans.sdp });
   await db.ref('nd_signal/' + myUid + '/status').set('answered');
+  if (call.from) {
+    db.ref('nd_signal/' + call.from + '/status').set('answered').catch(() => {});
+  }
   db.ref('nd_signal/' + myUid + '/ice/' + call.from).on('child_added', async snap => {
     const c = snap.val(); if (!c) return; try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch (e) {}
   });
@@ -4688,7 +4731,12 @@ async function answerCall() {
 
 function declineCall() {
   document.getElementById('incoming-overlay').style.display = 'none';
-  if (window._pc) db.ref('nd_signal/' + myUid + '/status').set('declined');
+  if (window._pc) {
+    db.ref('nd_signal/' + myUid + '/status').set('declined');
+    if (window._pc.from) {
+      db.ref('nd_signal/' + window._pc.from + '/status').set('declined').catch(() => {});
+    }
+  }
   window._pc = null;
 }
 
@@ -5123,6 +5171,7 @@ if (rowSignOut) {
     // Clear local storage and IndexedDB
     try {
       localStorage.clear();
+      indexedDB.deleteDatabase('nd-chat-v2');
       indexedDB.deleteDatabase('crypto_db');
       auth.signOut().catch(() => {});
     } catch(e) {}
@@ -5536,18 +5585,25 @@ function initNativeIntegrations() {
   // 1. Hardware Back Button Handling
   if (AppPlugin) {
     AppPlugin.addListener('backButton', () => {
-      // Priority 1: In-call modal
-      const callModal = document.getElementById('call-modal');
-      if (callModal && callModal.style.display !== 'none' && callModal.style.display !== '') {
+      // Priority 1: In-call overlay or incoming call overlay
+      const callOverlay = document.getElementById('call-overlay');
+      if (callOverlay && callOverlay.classList.contains('active')) {
         hangup();
+        return;
+      }
+      const incomingOverlay = document.getElementById('incoming-overlay');
+      if (incomingOverlay && incomingOverlay.style.display && incomingOverlay.style.display !== 'none') {
+        declineCall();
         return;
       }
       // Priority 2: Any open modal/overlay
       const overlays = [
         'settings-overlay',
         'about-overlay',
-        'safety-modal-overlay',
+        'safety-number-overlay',
         'add-contact-overlay',
+        'restore-overlay',
+        'tour-overlay',
         'confirm-del-overlay',
         'clear-overlay',
         'name-edit-overlay'
