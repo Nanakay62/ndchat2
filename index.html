@@ -668,17 +668,17 @@ body {
   align-items:center;
   gap:8px;
   background:var(--surface-2);
-  border:1.5px solid var(--border);
+  border:none;
   border-radius:999px;
   padding:4px 6px 4px 12px;
-  transition:border-color .15s,box-shadow .15s,background .15s;
+  transition:background .15s;
   min-height:48px;
   position:relative;
 }
 .input-pill:focus-within{
-  border-color:#4F46E5;
-  box-shadow:0 0 0 3px rgba(79,70,229,0.12);
-  background:var(--surface);
+  background:var(--surface-2);
+  border:none;
+  box-shadow:none;
 }
 
 .attach-btn{
@@ -1224,9 +1224,27 @@ body.blurred .chat-main,body.blurred .sidebar{filter:blur(20px) brightness(.4);t
   .msgs { padding: 12px 14px; }
   .bubble-wrap { max-width: 86%; }
   .bubble { font-size: 15px; }
-  .input-area { padding: 8px 12px; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+  .input-area {
+    padding: 10px 14px;
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+  .input-pill {
+    min-height: 52px;
+    padding: 5px 8px 5px 14px;
+    gap: 8px;
+  }
+  .msg-input {
+    font-size: 16px !important;
+    padding: 9px 6px;
+    min-height: 28px;
+    line-height: 1.45;
+  }
+  .attach-btn, .voice-btn {
+    width: 38px;
+    height: 38px;
+  }
   .send-btn-txt { display: none; }
-  .send-btn { padding: 8px 14px; }
+  .send-btn { padding: 9px 16px; }
   .notif {
     bottom: max(16px, env(safe-area-inset-bottom));
     right: 10px; left: 10px; max-width: unset;
@@ -1942,23 +1960,26 @@ body.dark .input-area {
   box-shadow: 0 -4px 20px rgba(0,0,0,0.30) !important;
 }
 
-/* — Message Input — */
-.msg-input {
-  background: rgba(255,255,255,0.60) !important;
-  border: 1px solid rgba(255,255,255,0.65) !important;
-  backdrop-filter: blur(10px) !important;
-  -webkit-backdrop-filter: blur(10px) !important;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.04) !important;
-  font-family: 'Roboto', sans-serif !important;
+/* — Message Input & Pill: Seamless blend with sides & no visible border — */
+.input-pill {
+  border: none !important;
+  box-shadow: none !important;
 }
-body.dark .msg-input {
-  background: rgba(30,41,59,0.65) !important;
-  border-color: rgba(255,255,255,0.08) !important;
+.input-pill:focus-within {
+  border: none !important;
+  box-shadow: none !important;
 }
-.msg-input:focus {
-  background: rgba(255,255,255,0.80) !important;
-  border-color: rgba(0,102,255,0.50) !important;
-  box-shadow: 0 0 0 3px rgba(0,102,255,0.08), 0 2px 8px rgba(0,0,0,0.06) !important;
+.msg-input,
+.msg-input:focus,
+body.dark .msg-input,
+body.dark .msg-input:focus {
+  background: transparent !important;
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
 }
 
 /* — Welcome Cards — */
@@ -4346,9 +4367,15 @@ function startInlineEdit(row, key, m) {
 }
 
 document.getElementById('send-btn').onclick = sendMsg;
-document.getElementById('msg-input').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); } });
+// Pressing enter should not send a message, but rather go to a new line below text by default
+document.getElementById('msg-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    sendMsg();
+  }
+});
 document.getElementById('msg-input').oninput = function () {
-  this.style.height = 'auto'; this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+  this.style.height = 'auto'; this.style.height = Math.min(this.scrollHeight, 140) + 'px';
   if (!activeUid) return;
   db.ref('nd_typing/' + myUid).set({ to: activeUid, name: myName }).catch(() => {});
   clearTimeout(typingTimer); typingTimer = setTimeout(() => db.ref('nd_typing/' + myUid).remove().catch(() => {}), 2000);
