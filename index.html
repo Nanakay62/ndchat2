@@ -494,8 +494,8 @@ body {
 .msgs::-webkit-scrollbar-thumb{background:var(--border);border-radius:10px;}
 
 .msg-row{
-  display:flex;align-items:flex-end;gap:10px;
-  margin-bottom:18px;
+  display:flex;align-items:flex-end;gap:8px;
+  margin-bottom:12px;
   animation:pop .2s cubic-bezier(.34,1.56,.64,1);
   position:relative;
   width:100%;
@@ -503,34 +503,27 @@ body {
 @keyframes pop{from{opacity:0;transform:translateY(4px) scale(.98)}to{opacity:1;transform:none}}
 
 .msg-row.sent{
-  flex-direction:row-reverse;
+  justify-content:flex-end;
+}
+.msg-row.received{
+  justify-content:flex-start;
 }
 
-.msg-col{
-  display:flex;flex-direction:column;
+.bubble-wrap{
+  position:relative;
+  display:flex;
+  align-items:flex-end;
   max-width:min(72%, 600px);
 }
-.msg-row.sent .msg-col{
-  align-items:flex-end;
+.msg-row.sent .bubble-wrap{
+  justify-content:flex-end;
 }
-.msg-row.received .msg-col{
-  align-items:flex-start;
-}
-
-.msg-sender-label{
-  font-size:12px;
-  font-weight:500;
-  color:var(--text-2);
-  margin-bottom:5px;
-  padding:0 4px;
-  letter-spacing:-0.1px;
-}
-.msg-row.sent .msg-sender-label{
-  text-align:right;
+.msg-row.received .bubble-wrap{
+  justify-content:flex-start;
 }
 
 .msg-av{
-  width:34px;height:34px;border-radius:50%;flex-shrink:0;
+  width:32px;height:32px;border-radius:50%;flex-shrink:0;
   background:#5B4DEE;color:#fff;
   display:flex;align-items:center;justify-content:center;
   overflow:hidden;align-self:flex-end;
@@ -540,12 +533,13 @@ body {
 .msg-av img{width:100%;height:100%;object-fit:cover;border-radius:inherit}
 .msg-av span{font-size:11px;font-weight:600;color:#fff}
 
-/* Whistleblower-style Bubbles */
+/* Modern Rounded Chat Bubbles */
 .bubble{
-  padding:12px 18px;
-  font-size:14.5px;line-height:1.55;
+  padding:10px 16px;
+  font-size:14.5px;line-height:1.5;
   position:relative;word-break:break-word;
   box-sizing:border-box;
+  width:100%;
 }
 .msg-row.sent .bubble{
   background:var(--sent-bg);color:var(--sent-text);
@@ -559,13 +553,25 @@ body {
   box-shadow:0 1px 3px rgba(0,0,0,0.03);
 }
 
-.msg-meta{display:flex;align-items:center;gap:6px;margin-top:6px}
-.msg-row.sent .msg-meta{justify-content:flex-end;color:rgba(255,255,255,0.75)}
-.msg-row.received .msg-meta{justify-content:flex-start;color:var(--text-3)}
-.msg-time{display:none}
-.msg-ttl{font-family:var(--mono);font-size:10px;opacity:.8}
-.msg-edited{font-size:10px;opacity:.7;font-style:italic}
-.ttl-bar{height:2px;border-radius:1px;background:rgba(255,255,255,.4);margin-top:5px;transition:width linear}
+.msg-meta{
+  display:flex;align-items:center;gap:8px;margin-top:5px;
+}
+.msg-row.sent .msg-meta{
+  justify-content:flex-end;color:rgba(255,255,255,0.78);
+}
+.msg-row.received .msg-meta{
+  justify-content:flex-end;color:var(--text-3);
+}
+.msg-time{
+  font-size:11px;font-weight:400;letter-spacing:0.01em;opacity:0.85;
+}
+.msg-ttl{
+  font-family:var(--mono);font-size:10px;opacity:.85;
+}
+.msg-edited{
+  font-size:10px;opacity:.7;font-style:italic;
+}
+.ttl-bar{height:2px;border-radius:1px;background:rgba(255,255,255,.4);margin-top:4px;transition:width linear}
 .msg-row.received .ttl-bar{background:rgba(79,70,229,0.35)}
 
 .date-sep{
@@ -1216,7 +1222,7 @@ body.blurred .chat-main,body.blurred .sidebar{filter:blur(20px) brightness(.4);t
 
   .chat-toolbar { padding: 8px 12px; min-height: 56px; }
   .msgs { padding: 12px 14px; }
-  .msg-col { max-width: 86%; }
+  .bubble-wrap { max-width: 86%; }
   .bubble { font-size: 15px; }
   .input-area { padding: 8px 12px; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
   .send-btn-txt { display: none; }
@@ -4153,8 +4159,6 @@ function renderMsg(key, m) {
   const pic = isSent ? (document.querySelector('#me-av img')?.src || null) : (c?.photoURL || null);
   const avHtml = pic ? `<div class="msg-av"><img src="${escAttr(pic)}" alt=""></div>` : `<div class="msg-av"><span>${esc(getInitials(senderName))}</span></div>`;
 
-  const senderTitle = isSent ? 'You (Whistleblower)' : (contactsData[m.sender]?.name || m.senderName || activeName || 'Case Investigator');
-
   let quoteH = '';
   if (m.replyTo) {
     quoteH = `<div class="msg-quote"><div class="quote-author">${esc(m.replyTo.name)}</div><div class="quote-text">${esc(m.replyTo.text || '📷 Media')}</div></div>`;
@@ -4184,23 +4188,22 @@ function renderMsg(key, m) {
   const ttlStr = mM + ':' + String(mS).padStart(2, '0');
   const timeStr = new Date(m.ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }).toLowerCase();
 
-  row.innerHTML = `
-    ${!isSent ? avHtml : ''}
-    <div class="reply-icon">↩</div>
-    <div class="msg-col">
-      <div class="msg-sender-label">${esc(senderTitle)} • ${timeStr}</div>
+  const bubbleHtml = `
+    <div class="bubble-wrap">
+      <div class="reply-icon">↩</div>
       <div class="bubble">
         ${content}
         <div class="msg-meta">
-          <span class="msg-time" style="display:none">${timeStr}</span>
-          ${m.edited ? '<span class="msg-edited">edited</span>' : '<span class="msg-edited" style="display:none">edited</span>'}
+          <span class="msg-time">${timeStr}</span>
+          ${m.edited ? '<span class="msg-edited">edited</span>' : ''}
           <span class="msg-ttl">⏱ ${ttlStr}</span>
         </div>
         <div class="ttl-bar" id="tb-${escAttr(key)}" style="width:${(rem / ttl) * 100}%"></div>
       </div>
     </div>
-    ${isSent ? avHtml : ''}
   `;
+
+  row.innerHTML = isSent ? `${bubbleHtml}${avHtml}` : `${avHtml}${bubbleHtml}`;
 
   row.addEventListener('click', e => {
     const imgEl = e.target.closest('.msg-img');
